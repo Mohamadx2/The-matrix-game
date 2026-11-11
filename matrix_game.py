@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
 The Matrix – Terminal Text Adventure
-Improved version with save/load, menu buttons, fixed assets, and cleaner structure.
+Features: save/load, menu, volume/mute, resizable window (letterbox),
+and expanded scenarios from The Matrix + Reloaded.
 """
 
 import pygame
 import sys
 import os
 import json
-import textwrap
 from pathlib import Path
 
 # Optional GIF support
@@ -17,12 +17,12 @@ try:
     HAS_GIF = True
 except ImportError:
     HAS_GIF = False
-    print("[Notice] gif-pygame not installed. Animated GIFs will be disabled.")
+    print("[Notice] gif-pygame not installed. Animated GIFs disabled.")
 
 # ------------------------------------------------------------------
 # Constants
 # ------------------------------------------------------------------
-SCREEN_W, SCREEN_H = 1050, 750
+LOGICAL_W, LOGICAL_H = 1050, 750          # fixed logical resolution
 SAVE_FILE = "savegame.json"
 MEDIA_DIR = Path("media")
 
@@ -33,7 +33,6 @@ BLACK = (0, 0, 0)
 WHITE = (255, 255, 255)
 GRAY = (40, 40, 40)
 LIGHT_GRAY = (180, 180, 180)
-RED = (220, 50, 50)
 
 # ------------------------------------------------------------------
 # Initialisation
@@ -41,13 +40,15 @@ RED = (220, 50, 50)
 pygame.init()
 pygame.mixer.init()
 
-screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))
+# Start with a resizable window
+screen = pygame.display.set_mode((LOGICAL_W, LOGICAL_H), pygame.RESIZABLE)
 pygame.display.set_caption("The Matrix – Terminal Text Adventure")
 clock = pygame.time.Clock()
 
-# Fonts (prefer monospace if available, otherwise default)
+# Logical surface we always draw to (keeps aspect ratio)
+logical_surface = pygame.Surface((LOGICAL_W, LOGICAL_H))
+
 def get_font(size, bold=False):
-    # Try common monospace fonts first for a more "terminal" feel
     for name in ["Consolas", "Courier New", "DejaVu Sans Mono", "Liberation Mono", "monospace"]:
         try:
             return pygame.font.SysFont(name, size, bold=bold)
@@ -61,18 +62,38 @@ FONT_SMALL = get_font(18)
 FONT_TINY = get_font(16)
 
 # ------------------------------------------------------------------
-# Audio
+# Audio + volume control
 # ------------------------------------------------------------------
+music_volume = 0.35
+music_muted = False
+
 def init_background_audio(filepath=MEDIA_DIR / "matrix_theme.mp3"):
+    global music_volume
     if filepath.exists():
         try:
             pygame.mixer.music.load(str(filepath))
-            pygame.mixer.music.set_volume(0.35)
+            pygame.mixer.music.set_volume(music_volume)
             pygame.mixer.music.play(loops=-1)
         except pygame.error as e:
             print(f"[Audio Warning] Could not play music: {e}")
     else:
         print(f"[Audio Notice] Music file not found: {filepath}")
+
+def set_volume(vol):
+    global music_volume, music_muted
+    music_volume = max(0.0, min(1.0, vol))
+    if not music_muted:
+        pygame.mixer.music.set_volume(music_volume)
+
+def toggle_mute():
+    global music_muted
+    music_muted = not music_muted
+    if music_muted:
+        pygame.mixer.music.set_volume(0.0)
+        return "Muted"
+    else:
+        pygame.mixer.music.set_volume(music_volume)
+        return f"Unmuted ({int(music_volume*100)}%)"
 
 init_background_audio()
 
@@ -80,8 +101,6 @@ init_background_audio()
 # Media helper
 # ------------------------------------------------------------------
 class Media:
-    """Safe loader for still images or animated GIFs with fallback."""
-
     def __init__(self, path, size=(350, 250), is_gif=False):
         self.path = Path(path)
         self.size = size
@@ -109,19 +128,16 @@ class Media:
             else:
                 surface.blit(self.asset, pos)
         else:
-            # Simple fallback rectangle + label
             rect = pygame.Rect(pos[0], pos[1], self.size[0], self.size[1])
             pygame.draw.rect(surface, DARK_GREEN, rect, 2)
             label = FONT_TINY.render("NO IMAGE", True, DARK_GREEN)
             surface.blit(label, (pos[0] + 10, pos[1] + 10))
 
 # ------------------------------------------------------------------
-# Scenario data (cleaned, fixed paths)
+# Scenario data – original + Reloaded extension
 # ------------------------------------------------------------------
-# Note: Digital_rain.gif has capital D; neo.jpg / morpheus.jpg exist.
-# red_pill.gif does not exist → we reuse the rain GIF.
-
 SCENARIOS = {
+    # ========== ORIGINAL MATRIX ==========
     "start": {
         "text": (
             "You are Neo, a hacker living a double life. A message flashes on your screen:\n"
@@ -132,12 +148,11 @@ SCENARIOS = {
             "2. club  – Go out to the club with Choi and look for the white rabbit."
         ),
         "options": {"stay": "stay_caught", "club": "club_meet", "1": "stay_caught", "2": "club_meet"},
-        "media": Media(MEDIA_DIR / "neo.jpg", (350, 250), is_gif=False)
+        "media": Media(MEDIA_DIR / "neo.jpg", (350, 250))
     },
     "stay_caught": {
         "text": (
-            "You stay home. The next morning at Meta CorTechs, Rhineheart warns you about your attitude. "
-            "Shortly after, Agents arrive at your cubicle. You are captured and brought in for interrogation.\n\n"
+            "You stay home. The next morning Agents arrive at your cubicle. You are captured.\n\n"
             "GAME OVER – Press any key to restart."
         ),
         "options": {},
@@ -145,122 +160,196 @@ SCENARIOS = {
     },
     "club_meet": {
         "text": (
-            "At the club, you notice a woman with a small white rabbit tattoo on her jacket: Trinity. "
-            "She approaches you and whispers:\n"
-            "‘The answer is out there, Neo. It's looking for you and it will find you, if you want it to.’\n\n"
-            "The next day at work, a FedEx package arrives containing a cell phone. Morpheus calls you, guiding you to escape the Agents.\n\n"
+            "At the club you meet Trinity. The next day Morpheus calls and guides you to escape the Agents.\n\n"
             "Choices:\n"
-            "1. scaffold  – Try to escape across the dangerous building scaffolding.\n"
-            "2. surrender – Give up and surrender to Agent Smith."
+            "1. scaffold  – Try the scaffolding escape.\n"
+            "2. surrender – Give up to Agent Smith."
         ),
         "options": {"scaffold": "interrogation", "surrender": "stay_caught", "1": "interrogation", "2": "stay_caught"},
         "media": Media(MEDIA_DIR / "Digital_rain.gif", (400, 300), is_gif=True)
     },
     "interrogation": {
         "text": (
-            "You attempt the escape, but slip and get captured by the Agents. "
-            "In the interrogation room, Agent Smith slides a file across the table and says:\n"
-            "‘We are willing to wipe the slate clean... all we are asking in return is your cooperation in bringing a known terrorist to justice... Morpheus.’\n\n"
-            "Neo: ‘How about I just give you the finger... And you give me my phone call!’\n"
-            "Smith seals your mouth shut and implants a horrific bug into your stomach. "
-            "You wake up in bed—was it a dream? The phone rings.\n\n"
+            "You are captured. Agent Smith implants a bug. You wake up – the phone rings.\n\n"
             "Choices:\n"
-            "1. bridge – Answer the phone and agree to meet Morpheus at the Adams Street bridge.\n"
-            "2. ignore – Ignore the call and stay in bed."
+            "1. bridge – Answer and meet Morpheus.\n"
+            "2. ignore – Stay in bed."
         ),
         "options": {"bridge": "morpheus_meet", "ignore": "stay_caught", "1": "morpheus_meet", "2": "stay_caught"},
         "media": Media(MEDIA_DIR / "Digital_rain.gif", (400, 300), is_gif=True)
     },
     "morpheus_meet": {
         "text": (
-            "Trinity and her crew pick you up, extract the bug from your stomach, and bring you to Room 1313 to meet Morpheus.\n"
-            "Morpheus: ‘You have the look of a man who accepts what he sees because he is expecting to wake up... "
-            "Unfortunately, no one can be told what the Matrix is. You have to see it for yourself.’\n\n"
-            "He opens his hands: ‘This is your last chance. After this, there is no going back.’\n\n"
+            "Morpheus offers the pills.\n\n"
             "Choices:\n"
-            "1. red  – Take the red pill and discover the truth of the desert of the real.\n"
-            "2. blue – Take the blue pill and wake up in your bed believing whatever you want."
+            "1. red  – Take the red pill.\n"
+            "2. blue – Take the blue pill."
         ),
         "options": {"red": "real_world_awakening", "blue": "stay_caught", "1": "real_world_awakening", "2": "stay_caught"},
-        "media": Media(MEDIA_DIR / "morpheus.jpg", (350, 250), is_gif=False)
+        "media": Media(MEDIA_DIR / "morpheus.jpg", (350, 250))
     },
     "real_world_awakening": {
         "text": (
-            "You wake up naked and slimy inside a liquid-filled pod, a cable plugged directly into the back of your skull. "
-            "You are rescued by the Nebuchadnezzar hovercraft. Morpheus welcomes you to the real world. "
-            "After recovering, you undergo intense combat loading programs (Jujitsu, Kung Fu) and jump training.\n\n"
-            "Next, Morpheus takes you to visit the Oracle to find your path.\n\n"
+            "You wake in the real world. After training, Morpheus takes you to the Oracle.\n\n"
             "Choices:\n"
-            "1. oracle – Meet the Oracle and the Spoon Boy in her kitchen.\n"
-            "2. skip   – Skip the Oracle visit and stay on the ship."
+            "1. oracle – Visit the Oracle.\n"
+            "2. skip   – Stay on the ship."
         ),
         "options": {"oracle": "oracle_visit", "skip": "building_trap", "1": "oracle_visit", "2": "building_trap"},
-        "media": Media(MEDIA_DIR / "morpheus.jpg", (350, 250), is_gif=False)
+        "media": Media(MEDIA_DIR / "morpheus.jpg", (350, 250))
     },
     "oracle_visit": {
         "text": (
-            "Inside the Oracle's apartment, a Spoon Boy hands you a spoon and tells you: "
-            "‘Do not try to bend the spoon. That is impossible. Instead, only try to realize the truth... There is no spoon.’\n\n"
-            "The Oracle bakes cookies and tells you your fortune:\n"
-            "‘Sorry, kid. You got the gift, but looks like you're waiting for something... Your next life, maybe.’\n"
-            "She warns you that Morpheus will sacrifice his life to save yours, forcing you to choose between your life and his.\n\n"
+            "The Oracle tells you that Morpheus will sacrifice himself for you.\n\n"
             "Choices:\n"
-            "1. betrayal – Cypher betrays the crew to the Agents at the hotel trap.\n"
-            "2. fight    – Stand your ground against Agent Smith in the building walls."
+            "1. continue – Accept the path and face the trap.\n"
+            "2. deny     – Try to change fate."
         ),
-        "options": {"betrayal": "building_trap", "fight": "building_trap", "1": "building_trap", "2": "building_trap"},
-        "media": Media(MEDIA_DIR / "morpheus.jpg", (350, 250), is_gif=False)
+        "options": {"continue": "building_trap", "deny": "building_trap", "1": "building_trap", "2": "building_trap"},
+        "media": Media(MEDIA_DIR / "morpheus.jpg", (350, 250))
     },
     "building_trap": {
         "text": (
-            "A trap springs! Cypher's betrayal leads the Agents straight to you. Mouse is killed, and Morpheus allows himself to be captured by Agent Smith to protect Neo.\n\n"
-            "Tank tells the team that Morpheus will soon break under interrogation and give up the mainframe access codes to Zion.\n"
-            "Neo refuses to abandon Morpheus: ‘I'm going in... I believe I can bring him back.’\n\n"
+            "Cypher betrays the crew. Morpheus is captured.\n\n"
             "Choices:\n"
-            "1. rescue  – Load up with 'Lots of guns' and launch a suicidal rescue mission on the government building.\n"
-            "2. abandon – Leave Morpheus behind and accept Zion's destruction."
+            "1. rescue  – Go in with guns blazing.\n"
+            "2. abandon – Leave him behind."
         ),
         "options": {"rescue": "lobby_gunfight", "abandon": "stay_caught", "1": "lobby_gunfight", "2": "stay_caught"},
-        "media": Media(MEDIA_DIR / "neo.jpg", (350, 250), is_gif=False)
+        "media": Media(MEDIA_DIR / "neo.jpg", (350, 250))
     },
     "lobby_gunfight": {
         "text": (
-            "You and Trinity burst through the revolving doors of the government building. "
-            "Security guard: ‘Would you please remove any metallic items you are carrying...’\n"
-            "You open your trench coat, revealing an overwhelming arsenal, and execute a breathtaking lobby shootout. "
-            "You scale the elevator shaft, blow the cables, and make it to the rooftop where you face Agent Jones in slow-motion Bullet-Time!\n\n"
-            "Trinity saves the day: ‘Dodge this!’ You pilot a B-212 military helicopter straight into the executive office to rescue Morpheus.\n\n"
+            "The lobby shootout and rooftop rescue succeed. You head for the subway.\n\n"
             "Choices:\n"
-            "1. subway          – Escape through the subway station where Agent Smith waits for you.\n"
-            "2. surrender_agent – Surrender to Agent Smith."
+            "1. subway – Face Agent Smith.\n"
+            "2. run    – Try to escape another way."
         ),
-        "options": {"subway": "subway_showdown", "surrender_agent": "stay_caught", "1": "subway_showdown", "2": "stay_caught"},
-        "media": Media(MEDIA_DIR / "neo.jpg", (350, 250), is_gif=False)
+        "options": {"subway": "subway_showdown", "run": "stay_caught", "1": "subway_showdown", "2": "stay_caught"},
+        "media": Media(MEDIA_DIR / "neo.jpg", (350, 250))
     },
     "subway_showdown": {
         "text": (
-            "At the subway station, Agent Smith confronts you.\n"
-            "Smith: ‘I'm going to enjoy watching you die, Mr. Anderson.’\n"
-            "After a brutal clash on the tracks, an oncoming train strikes Smith. You flee through the city alleys toward room 303. "
-            "Tragically, Agent Smith ambushes you at the door and shoots you dead.\n\n"
-            "Back on the hovercraft, Trinity refuses to accept your death:\n"
-            "‘You can't be dead, Neo, you can't be because I love you... I love you!’ She kisses you.\n\n"
+            "Smith kills you. Trinity’s kiss brings you back.\n\n"
             "Choices:\n"
-            "1. revive    – Your eyes snap open. You are truly becoming The One.\n"
-            "2. stay_dead – Stay dead and let the machines win."
+            "1. revive – Become The One.\n"
+            "2. die    – Stay dead."
         ),
-        "options": {"revive": "hero_victory", "stay_dead": "stay_caught", "1": "hero_victory", "2": "stay_caught"},
-        "media": Media(MEDIA_DIR / "neo.jpg", (350, 250), is_gif=False)
+        "options": {"revive": "hero_victory", "die": "stay_caught", "1": "hero_victory", "2": "stay_caught"},
+        "media": Media(MEDIA_DIR / "neo.jpg", (350, 250))
     },
     "hero_victory": {
         "text": (
-            "You stand up. The bullets fired by the Agents freeze in mid-air and drop harmlessly to the floor. "
-            "You see through the code of the Matrix, thrust your hand into Agent Smith, and destroy him from within!\n\n"
-            "CONGRATULATIONS – You have liberated your mind, saved Morpheus, and become the hero of the Matrix!\n\n"
+            "You destroy Smith from within and free your mind.\n\n"
+            "CONGRATULATIONS – End of the first chapter.\n\n"
+            "Choices:\n"
+            "1. continue – Enter The Matrix Reloaded.\n"
+            "2. restart  – Play the first story again."
+        ),
+        "options": {"continue": "zion_return", "restart": "start", "1": "zion_return", "2": "start"},
+        "media": Media(MEDIA_DIR / "neo.jpg", (350, 250))
+    },
+
+    # ========== MATRIX RELOADED EXTENSION ==========
+    "zion_return": {
+        "text": (
+            "The Nebuchadnezzar returns to Zion. Commander Lock is furious that Morpheus left a ship behind "
+            "to wait for the Oracle. The Machines are digging straight toward the city.\n\n"
+            "Morpheus still believes the prophecy. He asks one ship to stay near the broadcast level.\n\n"
+            "Choices:\n"
+            "1. support – Side with Morpheus and prepare to meet the Oracle again.\n"
+            "2. lock    – Side with Lock and return fully to Zion."
+        ),
+        "options": {"support": "seraph_meet", "lock": "zion_stay", "1": "seraph_meet", "2": "zion_stay"},
+        "media": Media(MEDIA_DIR / "morpheus.jpg", (350, 250))
+    },
+    "zion_stay": {
+        "text": (
+            "You remain in Zion. The Machines continue their advance. Without the Oracle’s guidance "
+            "the path of the One remains unclear.\n\n"
+            "The story ends here for now.\n\n"
             "Press any key to restart."
         ),
         "options": {},
-        "media": Media(MEDIA_DIR / "neo.jpg", (350, 250), is_gif=False)
+        "media": Media(MEDIA_DIR / "Digital_rain.gif", (400, 300), is_gif=True)
+    },
+    "seraph_meet": {
+        "text": (
+            "You enter the Matrix seeking the Oracle. A man in white awaits you – Seraph.\n\n"
+            "Seraph: ‘You seek the Oracle. I can take you to her. But first I must be sure.’\n\n"
+            "He attacks. After a short, precise fight he stops.\n\n"
+            "Seraph: ‘Good. The Oracle has many enemies. I had to be sure that you are the One.’\n\n"
+            "Choices:\n"
+            "1. follow – Follow Seraph to the Oracle.\n"
+            "2. question – Ask him more about who he is."
+        ),
+        "options": {"follow": "oracle_reloaded", "question": "oracle_reloaded", "1": "oracle_reloaded", "2": "oracle_reloaded"},
+        "media": Media(MEDIA_DIR / "Digital_rain.gif", (400, 300), is_gif=True)
+    },
+    "oracle_reloaded": {
+        "text": (
+            "You find the Oracle on a park bench feeding birds.\n\n"
+            "Oracle: ‘Well, come on, I ain’t going to bite you. Come around here and let me have a look at you.’\n\n"
+            "She offers you a piece of candy.\n\n"
+            "Choices:\n"
+            "1. take   – Take the candy.\n"
+            "2. refuse – Refuse the candy."
+        ),
+        "options": {"take": "oracle_candy", "refuse": "oracle_candy", "1": "oracle_candy", "2": "oracle_candy"},
+        "media": Media(MEDIA_DIR / "morpheus.jpg", (350, 250))
+    },
+    "oracle_candy": {
+        "text": (
+            "Oracle: ‘You’ve already made the choice. You’re here to try to understand why you made it.’\n\n"
+            "She tells you that to reach the Source you will need the Keymaker, who is held prisoner by "
+            "the Merovingian – an old and dangerous program.\n\n"
+            "Oracle: ‘Be there at that exact time and you will have a chance.’\n\n"
+            "As she leaves, black birds scatter. A familiar figure approaches.\n\n"
+            "Choices:\n"
+            "1. face – Stay and face him.\n"
+            "2. leave – Try to leave immediately."
+        ),
+        "options": {"face": "smith_confront", "leave": "smith_confront", "1": "smith_confront", "2": "smith_confront"},
+        "media": Media(MEDIA_DIR / "neo.jpg", (350, 250))
+    },
+    "smith_confront": {
+        "text": (
+            "Agent Smith (no longer an Agent) stands before you.\n\n"
+            "Smith: ‘Mister Anderson. Did you get my package?’\n\n"
+            "He speaks of purpose, of being unplugged because of you, and of the connection between you.\n\n"
+            "More Smiths begin to appear.\n\n"
+            "Choices:\n"
+            "1. fight – Stand and fight the multiplying Smiths.\n"
+            "2. fly   – Attempt to fly away immediately."
+        ),
+        "options": {"fight": "smith_fight", "fly": "smith_escape", "1": "smith_fight", "2": "smith_escape"},
+        "media": Media(MEDIA_DIR / "Digital_rain.gif", (400, 300), is_gif=True)
+    },
+    "smith_fight": {
+        "text": (
+            "The Smiths swarm you. One sinks his fingers into your chest, trying to overwrite you.\n\n"
+            "With a surge of will you tear free. You fight, using a fence post as a weapon, but more keep coming.\n\n"
+            "Smith: ‘It is… inevitable.’\n\n"
+            "You leap into the sky, dragging a chain of Smiths with you.\n\n"
+            "You break free and escape – for now.\n\n"
+            "The path to the Keymaker and the Merovingian still lies ahead.\n\n"
+            "CHAPTER COMPLETE – More of Reloaded can be added later.\n\n"
+            "Press any key to restart."
+        ),
+        "options": {},
+        "media": Media(MEDIA_DIR / "neo.jpg", (350, 250))
+    },
+    "smith_escape": {
+        "text": (
+            "You rocket into the sky before the first Smith can connect.\n\n"
+            "Behind you the park fills with copies. Smith’s voice echoes:\n\n"
+            "‘It is inevitable.’\n\n"
+            "You have bought time, but the connection remains.\n\n"
+            "CHAPTER COMPLETE – The road to the Merovingian and the Keymaker awaits.\n\n"
+            "Press any key to restart."
+        ),
+        "options": {},
+        "media": Media(MEDIA_DIR / "Digital_rain.gif", (400, 300), is_gif=True)
     }
 }
 
@@ -270,10 +359,10 @@ SCENARIOS = {
 current_scenario = "start"
 input_text = ""
 restart_pending = False
-status_message = ""          # temporary feedback ("Game saved", "Invalid choice", etc.)
+status_message = ""
 status_timer = 0
 
-# Menu button rectangles (top bar)
+# Menu buttons (logical coordinates)
 BUTTON_H = 32
 BUTTON_Y = 8
 btn_save = pygame.Rect(20, BUTTON_Y, 110, BUTTON_H)
@@ -320,8 +409,7 @@ def reset_game():
     restart_pending = False
     set_status("Restarted.")
 
-def draw_text_wrapped(text, font, colour, x, y, max_width):
-    """Draw multi-line text with word wrapping. Returns the y after the last line."""
+def draw_text_wrapped(surface, text, font, colour, x, y, max_width):
     lines = []
     for paragraph in text.split("\n"):
         if not paragraph:
@@ -340,28 +428,46 @@ def draw_text_wrapped(text, font, colour, x, y, max_width):
 
     for line in lines:
         surf = font.render(line, True, colour)
-        screen.blit(surf, (x, y))
+        surface.blit(surf, (x, y))
         y += font.get_linesize() + 2
     return y
 
-def draw_button(rect, label, hover=False):
+def draw_button(surface, rect, label, hover=False):
     colour = DARK_GREEN if hover else GRAY
-    pygame.draw.rect(screen, colour, rect, border_radius=4)
-    pygame.draw.rect(screen, GREEN, rect, 1, border_radius=4)
+    pygame.draw.rect(surface, colour, rect, border_radius=4)
+    pygame.draw.rect(surface, GREEN, rect, 1, border_radius=4)
     text = FONT_SMALL.render(label, True, GREEN)
     text_rect = text.get_rect(center=rect.center)
-    screen.blit(text, text_rect)
+    surface.blit(text, text_rect)
+
+def get_scaled_mouse(pos, window_size):
+    """Convert real window mouse coordinates to logical coordinates."""
+    win_w, win_h = window_size
+    scale = min(win_w / LOGICAL_W, win_h / LOGICAL_H)
+    offset_x = (win_w - LOGICAL_W * scale) / 2
+    offset_y = (win_h - LOGICAL_H * scale) / 2
+    if scale == 0:
+        return (0, 0)
+    lx = (pos[0] - offset_x) / scale
+    ly = (pos[1] - offset_y) / scale
+    return (lx, ly)
 
 # ------------------------------------------------------------------
 # Main loop
 # ------------------------------------------------------------------
 running = True
 while running:
-    mouse_pos = pygame.mouse.get_pos()
+    window_size = screen.get_size()
+    raw_mouse = pygame.mouse.get_pos()
+    mouse_pos = get_scaled_mouse(raw_mouse, window_size)
 
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
+
+        elif event.type == pygame.VIDEORESIZE:
+            # Window was resized – keep it resizable
+            screen = pygame.display.set_mode(event.size, pygame.RESIZABLE)
 
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             if btn_save.collidepoint(mouse_pos):
@@ -372,7 +478,18 @@ while running:
                 running = False
 
         elif event.type == pygame.KEYDOWN:
-            if restart_pending:
+            # Volume / mute controls (always available)
+            if event.key == pygame.K_m:
+                msg = toggle_mute()
+                set_status(msg)
+            elif event.key in (pygame.K_EQUALS, pygame.K_PLUS, pygame.K_KP_PLUS):
+                set_volume(music_volume + 0.05)
+                set_status(f"Volume {int(music_volume*100)}%")
+            elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
+                set_volume(music_volume - 0.05)
+                set_status(f"Volume {int(music_volume*100)}%")
+
+            elif restart_pending:
                 reset_game()
             elif event.key == pygame.K_RETURN:
                 scenario = SCENARIOS[current_scenario]
@@ -390,62 +507,76 @@ while running:
                 input_text = input_text[:-1]
             else:
                 if not restart_pending and SCENARIOS[current_scenario]["options"]:
-                    # Accept printable characters only
                     if event.unicode and event.unicode.isprintable():
                         input_text += event.unicode
 
-    # Status timer countdown
     if status_timer > 0:
         status_timer -= 1
         if status_timer == 0:
             status_message = ""
 
     # --------------------------------------------------------------
-    # Drawing
+    # Draw everything to the logical surface
     # --------------------------------------------------------------
-    screen.fill(BLACK)
+    logical_surface.fill(BLACK)
     scenario = SCENARIOS[current_scenario]
 
-    # Top menu bar background
-    pygame.draw.rect(screen, (15, 15, 15), (0, 0, SCREEN_W, 48))
-    pygame.draw.line(screen, DARK_GREEN, (0, 48), (SCREEN_W, 48), 1)
+    # Top bar
+    pygame.draw.rect(logical_surface, (15, 15, 15), (0, 0, LOGICAL_W, 48))
+    pygame.draw.line(logical_surface, DARK_GREEN, (0, 48), (LOGICAL_W, 48), 1)
 
-    # Buttons
-    draw_button(btn_save, "SAVE", btn_save.collidepoint(mouse_pos))
-    draw_button(btn_load, "LOAD", btn_load.collidepoint(mouse_pos))
-    draw_button(btn_exit, "EXIT", btn_exit.collidepoint(mouse_pos))
+    draw_button(logical_surface, btn_save, "SAVE", btn_save.collidepoint(mouse_pos))
+    draw_button(logical_surface, btn_load, "LOAD", btn_load.collidepoint(mouse_pos))
+    draw_button(logical_surface, btn_exit, "EXIT", btn_exit.collidepoint(mouse_pos))
 
-    # Status message (right side of top bar)
     if status_message:
         status_surf = FONT_TINY.render(status_message, True, GREEN)
-        screen.blit(status_surf, (SCREEN_W - status_surf.get_width() - 20, 14))
+        logical_surface.blit(status_surf, (LOGICAL_W - status_surf.get_width() - 20, 14))
 
-    # Media (right side)
+    # Media
     media = scenario.get("media")
-    media_x = SCREEN_W - 380
+    media_x = LOGICAL_W - 380
     media_y = 70
     if media:
-        media.draw(screen, (media_x, media_y))
+        media.draw(logical_surface, (media_x, media_y))
 
-    # Scenario text (left side)
+    # Text
     text_x = 30
     text_y = 70
-    text_width = media_x - 60 if media else SCREEN_W - 60
-    new_y = draw_text_wrapped(scenario["text"], FONT_MED, GREEN, text_x, text_y, text_width)
+    text_width = media_x - 60 if media else LOGICAL_W - 60
+    new_y = draw_text_wrapped(logical_surface, scenario["text"], FONT_MED, GREEN, text_x, text_y, text_width)
 
-    # Input prompt or restart message
+    # Input / restart
     if scenario["options"] and not restart_pending:
         cursor = "_" if (pygame.time.get_ticks() // 500) % 2 else " "
         prompt = "> " + input_text + cursor
         prompt_surf = FONT_LARGE.render(prompt, True, WHITE)
-        screen.blit(prompt_surf, (text_x, new_y + 25))
+        logical_surface.blit(prompt_surf, (text_x, new_y + 25))
     elif restart_pending:
         msg = FONT_LARGE.render("Press any key to restart", True, WHITE)
-        screen.blit(msg, (text_x, new_y + 25))
+        logical_surface.blit(msg, (text_x, new_y + 25))
 
-    # Footer hint
-    hint = FONT_TINY.render("Type the keyword or number then press ENTER  |  Click SAVE / LOAD / EXIT", True, LIGHT_GRAY)
-    screen.blit(hint, (30, SCREEN_H - 28))
+    # Footer
+    hint = FONT_TINY.render(
+        "Type keyword/number + ENTER  |  M = mute  +/- = volume  |  SAVE / LOAD / EXIT",
+        True, LIGHT_GRAY
+    )
+    logical_surface.blit(hint, (30, LOGICAL_H - 28))
+
+    # --------------------------------------------------------------
+    # Scale logical surface to window with letterboxing
+    # --------------------------------------------------------------
+    win_w, win_h = window_size
+    scale = min(win_w / LOGICAL_W, win_h / LOGICAL_H)
+    scaled_w = int(LOGICAL_W * scale)
+    scaled_h = int(LOGICAL_H * scale)
+    offset_x = (win_w - scaled_w) // 2
+    offset_y = (win_h - scaled_h) // 2
+
+    screen.fill(BLACK)
+    if scale > 0:
+        scaled = pygame.transform.smoothscale(logical_surface, (scaled_w, scaled_h))
+        screen.blit(scaled, (offset_x, offset_y))
 
     pygame.display.flip()
     clock.tick(30)
